@@ -11,12 +11,14 @@ import 'package:message_hub/sms/sms_screen.dart' show isAutomatedSender;
 import 'package:message_hub/whatsapp/chat_parser.dart';
 import 'package:message_hub/whatsapp/media_scanner.dart';
 import 'package:message_hub/whatsapp/wa_events.dart';
+import 'package:googleapis/gmail/v1.dart' show DetailedApiRequestError;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 MsgEvent ev(DateTime t, {bool out = false, String c = 'x', int b = 0}) =>
     MsgEvent(time: t, outgoing: out, source: Source.sms, contact: c, bytes: b);
 
 void main() {
+  quotaTests();
   group('stats', () {
     final now = DateTime(2026, 11, 26, 15);
     final events = [
@@ -226,6 +228,73 @@ void main() {
       expect(await db.importChat(chat), 0);
       final chats = await db.importedChats();
       expect(chats.single.messages.length, 2);
+    });
+  });
+}
+
+// ---------------------------------------------------------------- Gmail quota handling
+
+DetailedApiRequestError quotaError() => DetailedApiRequestError(403,
+    "Quota exceeded for quota metric 'Total Query Cost' and limit 'Units per minute per user'");
+
+void quotaTests() {
+  group('gmail quota', () {
+    test('isQuotaError', () {
+      expect(isQuotaError(quotaError()), isTrue);
+      expect(isQuotaError(DetailedApiRequestError(429, 'Too many')), isTrue);
+      expect(isQuotaError(DetailedApiRequestError(403, 'Insufficient Permission')), isFalse);
+      expect(isQuotaError(StateError('x')), isFalse);
+    });
+
+    test('rate limiter spaces requests', () async {
+      final slept = <Duration>[];
+      final l = RateLimiter(perSecond: 40, sleep: (d) async => slept.add(d));
+      for (var i = 0; i < 5; i++) {
+        await l.acquire();
+      }
+      // 5 requests at 40/s: the 5th waits ~100ms after the 1st
+      expect(slept.last.inMilliseconds, inInclusiveRange(90, 101));
+    });
+
+    test('pooled pauses on quota error, then finishes every item', () async {
+      final waits = <Duration>[];
+      var failedOnce = false;
+      final out = await pooled<int, int>(
+        List.generate(20, (i) => i),
+        (i) async {
+          if (i == 7 && !failedOnce) {
+            failedOnce = true;
+            throw quotaError();
+          }
+          return i * 2;
+        },
+        parallel: 4,
+        onQuotaWait: waits.add,
+        quotaPause: const Duration(milliseconds: 20),
+      );
+      expect(out.toSet(), {for (var i = 0; i < 20; i++) i * 2});
+      expect(waits.length, 1);
+    });
+
+    test('pooled gives up after maxRetries and rethrows real errors at once', () async {
+      var calls = 0;
+      await expectLater(
+        pooled<int, int>([1], (_) async {
+          calls++;
+          throw quotaError();
+        }, quotaPause: Duration.zero, maxRetries: 2),
+        throwsA(isA<DetailedApiRequestError>()),
+      );
+      expect(calls, 3);
+      calls = 0;
+      await expectLater(
+        pooled<int, int>([1], (_) async {
+          calls++;
+          throw DetailedApiRequestError(404, 'Not found');
+        }),
+        throwsA(isA<DetailedApiRequestError>()),
+      );
+      expect(calls, 1);
     });
   });
 }

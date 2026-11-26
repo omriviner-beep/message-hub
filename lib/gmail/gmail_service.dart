@@ -49,24 +49,79 @@ MailMeta mailFromApi(gm.Message msg) {
   );
 }
 
-/// Runs [task] over [items] with at most [parallel] in flight; retries rate-limit errors.
-Future<List<R>> pooled<T, R>(List<T> items, Future<R> Function(T) task,
-    {int parallel = 8, void Function(int done)? onProgress}) async {
+/// Spaces out request starts so all workers together stay under a rate.
+///
+/// Gmail allows ~15,000 quota units per user per minute; messages.get and
+/// messages.trash cost 5 units each, so 40 requests/second = 12,000 units/minute.
+class RateLimiter {
+  final Duration interval;
+  final Future<void> Function(Duration) _sleep;
+  DateTime _next = DateTime.fromMillisecondsSinceEpoch(0);
+
+  RateLimiter({int perSecond = 40, Future<void> Function(Duration)? sleep})
+      : interval = Duration(microseconds: 1000000 ~/ perSecond),
+        _sleep = sleep ?? Future.delayed;
+
+  Future<void> acquire() async {
+    final now = DateTime.now();
+    final start = _next.isAfter(now) ? _next : now;
+    _next = start.add(interval);
+    final wait = start.difference(now);
+    if (wait > Duration.zero) await _sleep(wait);
+  }
+
+  /// Everyone pauses (used after a quota error, since the quota is per minute).
+  void pauseFor(Duration d) {
+    final until = DateTime.now().add(d);
+    if (until.isAfter(_next)) _next = until;
+  }
+}
+
+bool isQuotaError(Object e) {
+  if (e is! gm.DetailedApiRequestError) return false;
+  if (e.status == 429) return true;
+  final text = '${e.message} ${e.errors.map((x) => x.reason).join(' ')}'.toLowerCase();
+  return e.status == 403 && (text.contains('quota') || text.contains('ratelimit'));
+}
+
+bool _isTransient(Object e) => e is gm.DetailedApiRequestError && (e.status ?? 0) >= 500;
+
+/// Runs [task] over [items] with at most [parallel] in flight, throttled by [limiter].
+/// Quota errors pause all workers for a minute (the quota window) and retry.
+Future<List<R>> pooled<T, R>(
+  List<T> items,
+  Future<R> Function(T) task, {
+  int parallel = 8,
+  RateLimiter? limiter,
+  void Function(int done)? onProgress,
+  void Function(Duration wait)? onQuotaWait,
+  Duration quotaPause = const Duration(seconds: 60),
+  int maxRetries = 5,
+}) async {
   final results = <R>[];
   var next = 0, done = 0;
   Future<void> worker() async {
     while (next < items.length) {
       final item = items[next++];
       for (var attempt = 0;; attempt++) {
+        await limiter?.acquire();
         try {
           results.add(await task(item));
           break;
-        } on gm.DetailedApiRequestError catch (e) {
-          if ((e.status == 429 || e.status == 403 || (e.status ?? 0) >= 500) && attempt < 6) {
-            await Future.delayed(Duration(milliseconds: 500 * (1 << attempt)));
-            continue;
+        } catch (e) {
+          if (attempt >= maxRetries) rethrow;
+          if (isQuotaError(e)) {
+            onQuotaWait?.call(quotaPause);
+            if (limiter != null) {
+              limiter.pauseFor(quotaPause);
+            } else {
+              await Future.delayed(quotaPause);
+            }
+          } else if (_isTransient(e)) {
+            await Future.delayed(Duration(seconds: 1 << attempt));
+          } else {
+            rethrow;
           }
-          rethrow;
         }
       }
       onProgress?.call(++done);
@@ -81,6 +136,12 @@ class GmailService {
   /// Supplies the Web client id entered in Settings (used when no --dart-define was given).
   final String Function() webClientId;
   GmailService({String Function()? webClientId}) : webClientId = webClientId ?? (() => '');
+
+  /// Shared by every call so scans and cleanups together respect the quota.
+  final limiter = RateLimiter();
+
+  /// Called when Google's per-minute quota is hit and the service is waiting.
+  void Function(Duration wait)? onQuotaWait;
 
   GoogleSignInAccount? account;
   gm.GmailApi? _api;
@@ -166,14 +227,14 @@ class GmailService {
   Future<List<gm.Message>> _getMeta(List<String> ids, {void Function(int)? onProgress}) async {
     final api = await _fresh();
     return pooled(ids, (id) => api.users.messages.get('me', id, format: 'metadata', metadataHeaders: _headers),
-        onProgress: onProgress);
+        limiter: limiter, onProgress: onProgress, onQuotaWait: onQuotaWait);
   }
 
   Future<List<MailMeta>> fetchMeta(List<String> ids, {void Function(int)? onProgress}) async =>
       (await _getMeta(ids, onProgress: onProgress)).map(mailFromApi).toList();
 
   /// Addresses you wrote to - a strong "this is a real friend" signal.
-  Future<Set<String>> contactedAddresses({int max = 1500}) async {
+  Future<Set<String>> contactedAddresses({int max = 500}) async {
     final ids = await listIds('', max: max, labelIds: ['SENT']);
     final out = <String>{};
     for (final m in await _getMeta(ids)) {
@@ -187,7 +248,8 @@ class GmailService {
 
   Future<void> trash(List<String> ids, {void Function(int)? onProgress}) async {
     final api = await _fresh();
-    await pooled(ids, (id) => api.users.messages.trash('me', id), onProgress: onProgress);
+    await pooled(ids, (id) => api.users.messages.trash('me', id),
+        limiter: limiter, onProgress: onProgress, onQuotaWait: onQuotaWait);
   }
 
   Future<void> modify(List<String> ids, {List<String> add = const [], List<String> remove = const []}) async {

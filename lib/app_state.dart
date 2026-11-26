@@ -11,6 +11,7 @@ import 'core/native.dart';
 import 'core/settings.dart';
 import 'gmail/classifier.dart';
 import 'gmail/gmail_service.dart';
+import 'package:googleapis/gmail/v1.dart' show DetailedApiRequestError;
 import 'whatsapp/chat_parser.dart';
 import 'whatsapp/media_scanner.dart';
 import 'whatsapp/wa_events.dart';
@@ -51,6 +52,7 @@ class AppState extends ChangeNotifier {
     error = null;
     notifyListeners();
   }
+
   int get periodDays => settings.periodDays;
   set periodDays(int v) {
     settings.periodDays = v;
@@ -81,7 +83,7 @@ class AppState extends ChangeNotifier {
     try {
       return await f();
     } catch (e) {
-      error = '$label נכשל: $e';
+      error = '$label נכשל: ${describeError(e)}';
       return null;
     } finally {
       progress = null;
@@ -97,15 +99,15 @@ class AppState extends ChangeNotifier {
   // ----------------------------------------------------------- events for statistics
 
   List<MsgEvent> get gmailEvents => [
-        for (final m in mail)
-          MsgEvent(
-            time: m.date,
-            outgoing: m.isSent,
-            source: Source.gmail,
-            contact: m.isSent ? '' : (m.senderName.isNotEmpty ? m.senderName : m.sender),
-            bytes: m.size,
-          ),
-      ];
+    for (final m in mail)
+      MsgEvent(
+        time: m.date,
+        outgoing: m.isSent,
+        source: Source.gmail,
+        contact: m.isSent ? '' : (m.senderName.isNotEmpty ? m.senderName : m.sender),
+        bytes: m.size,
+      ),
+  ];
 
   List<MsgEvent> get whatsappEvents =>
       whatsAppEvents(chats: waChats, notifications: waNotifications, myName: effectiveWaName ?? '');
@@ -113,49 +115,73 @@ class AppState extends ChangeNotifier {
   List<MsgEvent> get smsEvents => [for (final s in sms) s.toEvent()];
 
   List<MsgEvent> eventsFor(Set<Source> sources) => [
-        if (sources.contains(Source.gmail)) ...gmailEvents,
-        if (sources.contains(Source.whatsapp)) ...whatsappEvents,
-        if (sources.contains(Source.sms)) ...smsEvents,
-      ];
+    if (sources.contains(Source.gmail)) ...gmailEvents,
+    if (sources.contains(Source.whatsapp)) ...whatsappEvents,
+    if (sources.contains(Source.sms)) ...smsEvents,
+  ];
 
-  String? get effectiveWaName =>
-      settings.waMyName.isNotEmpty ? settings.waMyName : guessMyName(waChats);
+  String? get effectiveWaName => settings.waMyName.isNotEmpty ? settings.waMyName : guessMyName(waChats);
 
   // ----------------------------------------------------------------------- Gmail
 
-  Future<void> connectGmail() => _run('התחברות ל-Gmail', () async {
-        await gmail.signIn();
-        gmailAddress = await gmail.email();
-        if (gmailAddress != null && !settings.myAddresses.contains(gmailAddress)) {
-          settings.myAddresses = [...settings.myAddresses, gmailAddress!];
-        }
-      });
+  Future<void> connectGmail() async {
+    await _run('התחברות ל-Gmail', () async {
+      await gmail.signIn();
+      gmailAddress = await gmail.email();
+      if (gmailAddress != null && !settings.myAddresses.contains(gmailAddress)) {
+        settings.myAddresses = [...settings.myAddresses, gmailAddress!];
+      }
+    });
+    // First connection: start scanning right away.
+    if (gmailAddress != null && mail.isEmpty && error == null) await scanGmail();
+  }
 
   Future<void> disconnectGmail() => _run('ניתוק', () async {
-        await gmail.signOut();
-        await db.clearGmail();
-        mail = [];
-        gmailAddress = null;
-      });
+    await gmail.signOut();
+    await db.clearGmail();
+    mail = [];
+    gmailAddress = null;
+  });
 
   Future<void> scanGmail({bool refresh = false}) => _run('סריקת Gmail', () async {
-        final cfg = settings.classifierConfig();
-        if (cfg.friendsFromSent) {
-          _progress('אוסף כתובות מתיקיית "נשלח"...');
-          await db.addContacted(await gmail.contactedAddresses());
+    double? fraction;
+    gmail.onQuotaWait = (w) =>
+        _progress('הגענו למכסת הבקשות של Google לדקה. ממשיך בעוד ${w.inSeconds} שניות...', fraction);
+    try {
+      final cfg = settings.classifierConfig();
+      // Sent mail rarely changes who your friends are - collect it once.
+      if (cfg.friendsFromSent && (refresh || (await db.contacted()).isEmpty)) {
+        _progress('אוסף כתובות מתיקיית "נשלח"...');
+        await db.addContacted(await gmail.contactedAddresses());
+      }
+      _progress('מחפש הודעות...');
+      final ids = await gmail.listIds(settings.gmailQuery, max: settings.gmailMax);
+      final known = refresh ? <String>{} : await db.knownMailIds();
+      final fresh = ids.where((i) => !known.contains(i)).toList();
+      final clf = MailClassifier(cfg, contacted: await db.contacted());
+      for (var i = 0; i < fresh.length; i += 200) {
+        final chunk = fresh.sublist(i, (i + 200).clamp(0, fresh.length));
+        final got = await gmail.fetchMeta(
+          chunk,
+          onProgress: (d) {
+            fraction = (i + d) / fresh.length;
+            _progress('מוריד כותרות ${i + d}/${fresh.length}', fraction);
+          },
+        );
+        for (final m in got) {
+          m.category = clf.classify(m);
         }
-        _progress('מחפש הודעות...');
-        final ids = await gmail.listIds(settings.gmailQuery, max: settings.gmailMax);
-        final known = refresh ? <String>{} : await db.knownMailIds();
-        final fresh = ids.where((i) => !known.contains(i)).toList();
-        for (var i = 0; i < fresh.length; i += 200) {
-          final chunk = fresh.sublist(i, (i + 200).clamp(0, fresh.length));
-          final got = await gmail.fetchMeta(chunk,
-              onProgress: (d) => _progress('מוריד כותרות ${i + d}/${fresh.length}', (i + d) / fresh.length));
-          await db.upsertMail(got);
-        }
-        await reclassify();
-      });
+        // Saved per chunk: an interrupted scan resumes where it stopped.
+        await db.upsertMail(got);
+        final gotIds = {for (final g in got) g.id};
+          mail = [...mail.where((m) => !gotIds.contains(m.id)), ...got];
+        notifyListeners();
+      }
+      await reclassify();
+    } finally {
+      gmail.onQuotaWait = null;
+    }
+  });
 
   Future<void> reclassify() async {
     final clf = MailClassifier(settings.classifierConfig(), contacted: await db.contacted());
@@ -179,48 +205,50 @@ class AppState extends ChangeNotifier {
   }) {
     final cutoff = olderThanDays == null ? null : DateTime.now().subtract(Duration(days: olderThanDays));
     return mail
-        .where((m) =>
-            !m.isStarred &&
-            (includeImportant || !m.isImportant) &&
-            (categories == null || categories.contains(m.category)) &&
-            (senders == null || senders.contains(m.sender)) &&
-            (cutoff == null || m.date.isBefore(cutoff)) &&
-            (!unreadOnly || m.isUnread) &&
-            (!inboxOnly || m.inInbox))
+        .where(
+          (m) =>
+              !m.isStarred &&
+              (includeImportant || !m.isImportant) &&
+              (categories == null || categories.contains(m.category)) &&
+              (senders == null || senders.contains(m.sender)) &&
+              (cutoff == null || m.date.isBefore(cutoff)) &&
+              (!unreadOnly || m.isUnread) &&
+              (!inboxOnly || m.inInbox),
+        )
         .toList()
       ..sort((a, b) => b.date.compareTo(a.date));
   }
 
   Future<void> trashMail(List<MailMeta> msgs) => _run('העברה לאשפה', () async {
-        final ids = msgs.map((m) => m.id).toList();
-        await gmail.trash(ids, onProgress: (d) => _progress('מעביר לאשפה $d/${ids.length}', d / ids.length));
-        await db.deleteMail(ids);
-        final gone = ids.toSet();
-        mail = mail.where((m) => !gone.contains(m.id)).toList();
-      });
+    final ids = msgs.map((m) => m.id).toList();
+    await gmail.trash(ids, onProgress: (d) => _progress('מעביר לאשפה $d/${ids.length}', d / ids.length));
+    await db.deleteMail(ids);
+    final gone = ids.toSet();
+    mail = mail.where((m) => !gone.contains(m.id)).toList();
+  });
 
   Future<void> archiveMail(List<MailMeta> msgs) => _run('ארכוב', () async {
-        await gmail.archive(msgs.map((m) => m.id).toList());
-        for (final m in msgs) {
-          m.labels.remove('INBOX');
-        }
-        await db.upsertMail(msgs);
-      });
+    await gmail.archive(msgs.map((m) => m.id).toList());
+    for (final m in msgs) {
+      m.labels.remove('INBOX');
+    }
+    await db.upsertMail(msgs);
+  });
 
   Future<void> labelMail() => _run('הוספת תוויות', () async {
-        final groups = <MailCategory, List<String>>{};
-        for (final m in mail) {
-          if (m.category != null && m.category != MailCategory.other && !m.isSent) {
-            groups.putIfAbsent(m.category!, () => []).add(m.id);
-          }
-        }
-        final names = {for (final c in groups.keys) c: '$gmailLabelPrefix/${c.label}'};
-        final ids = await gmail.ensureLabels([gmailLabelPrefix, ...names.values]);
-        for (final e in groups.entries) {
-          _progress('מתייג ${e.key.label}...');
-          await gmail.modify(e.value, add: [ids[names[e.key]]!]);
-        }
-      });
+    final groups = <MailCategory, List<String>>{};
+    for (final m in mail) {
+      if (m.category != null && m.category != MailCategory.other && !m.isSent) {
+        groups.putIfAbsent(m.category!, () => []).add(m.id);
+      }
+    }
+    final names = {for (final c in groups.keys) c: '$gmailLabelPrefix/${c.label}'};
+    final ids = await gmail.ensureLabels([gmailLabelPrefix, ...names.values]);
+    for (final e in groups.entries) {
+      _progress('מתייג ${e.key.label}...');
+      await gmail.modify(e.value, add: [ids[names[e.key]]!]);
+    }
+  });
 
   // -------------------------------------------------------------------- WhatsApp
 
@@ -277,8 +305,8 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> scanWhatsAppMedia() => _run('סריקת מדיה של וואטסאפ', () async {
-        media = await compute(scanMedia, androidWhatsAppRoots);
-      });
+    media = await compute(scanMedia, androidWhatsAppRoots);
+  });
 
   Future<(int, int)> deleteWhatsAppMedia(List<MediaFile> files) async {
     final r = await _run('מחיקת קבצים', () async {
@@ -299,12 +327,23 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> loadSms() => _run('קריאת SMS', () async {
-        sms = await NativeBridge.readSms();
-      });
+    sms = await NativeBridge.readSms();
+  });
 }
 
 String _decodeUtf8(List<int> bytes) {
   // Strip UTF-8 BOM if present; tolerate malformed sequences.
   final b = bytes.length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? bytes.sublist(3) : bytes;
   return const Utf8Decoder(allowMalformed: true).convert(b);
+}
+
+/// Short, human error text (no "Bad state:" / exception class noise).
+String describeError(Object e) {
+  if (isQuotaError(e)) {
+    return 'חריגה ממכסת הבקשות של Google. ההודעות שכבר הורדו נשמרו. נסה שוב בעוד דקה והסריקה תמשיך מאותה נקודה.';
+  }
+  if (e is DetailedApiRequestError) return '${e.message ?? 'שגיאה'} (${e.status})';
+  if (e is StateError) return e.message;
+  if (e is FormatException) return e.message;
+  return '$e';
 }
