@@ -20,6 +20,7 @@ MsgEvent ev(DateTime t, {bool out = false, String c = 'x', int b = 0}) =>
 
 void main() {
   quotaTests();
+  taxonomyTests();
   group('stats', () {
     final now = DateTime(2026, 11, 26, 15);
     final events = [
@@ -213,10 +214,10 @@ void main() {
 
     test('mail round trip keeps category and labels', () async {
       await db.upsertMail([
-        MailMeta(id: '1', sender: 'a@b.com', date: DateTime(2026, 1, 2), labels: ['INBOX', 'UNREAD'], category: MailCategory.receipts, size: 10),
+        MailMeta(id: '1', sender: 'a@b.com', date: DateTime(2026, 1, 2), labels: ['INBOX', 'UNREAD'], category: 'receipts', size: 10),
       ]);
       final all = await db.allMail();
-      expect(all.single.category, MailCategory.receipts);
+      expect(all.single.category, 'receipts');
       expect(all.single.labels, ['INBOX', 'UNREAD']);
       all.single.labels.remove('INBOX'); // must be growable
       await db.deleteMail(['1']);
@@ -313,6 +314,58 @@ void quotaTests() {
         throwsA(isA<DetailedApiRequestError>()),
       );
       expect(calls, 1);
+    });
+  });
+}
+
+void taxonomyTests() {
+  group('custom categories', () {
+    MailMeta m(String from, String subject, {List<String> labels = const []}) =>
+        MailMeta(id: from + subject, sender: from, subject: subject, date: DateTime(2026), labels: labels);
+    const work = CustomCategory(id: 'c_work', name: 'עבודה', domains: ['acme.com']);
+    const amazonReceipts = CustomCategory(id: 'c_amz', name: 'אמזון', parent: 'receipts', domains: ['amazon.com']);
+    const bigOrders = CustomCategory(id: 'c_big', name: 'הזמנות גדולות', parent: 'c_amz', keywords: ['TV']);
+    const tax = Taxonomy(customs: [work, amazonReceipts, bigOrders], senderOverrides: {'news@shop.com': 'finance'});
+    final clf = MailClassifier(const ClassifierConfig());
+
+    test('top-level custom category wins over built-ins', () {
+      expect(clf.classifyKey(m('boss@mail.acme.com', 'Your receipt'), tax), 'c_work');
+    });
+
+    test('sub-category refines only mail already in its parent', () {
+      expect(clf.classifyKey(m('auto@amazon.com', 'Your receipt'), tax), 'c_amz');
+      expect(clf.classifyKey(m('deals@amazon.com', 'Sale', labels: ['CATEGORY_PROMOTIONS']), tax), 'promotions');
+      expect(clf.classifyKey(m('auto@amazon.com', 'Your receipt: TV'), tax), 'c_big');
+    });
+
+    test('sender override beats everything', () {
+      expect(clf.classifyKey(m('news@shop.com', '50% off', labels: ['CATEGORY_PROMOTIONS']), tax), 'finance');
+    });
+
+    test('disabled built-in falls through to the next match', () {
+      final noTravel = MailClassifier(const ClassifierConfig(disabled: {MailCategory.travel}));
+      expect(noTravel.classify(m('noreply@booking.com', 'Booking confirmation')), MailCategory.notifications);
+      // its sub-categories become unreachable, overrides into it are ignored
+      const t = Taxonomy(disabled: {MailCategory.receipts}, customs: [amazonReceipts], senderOverrides: {'a@b.com': 'c_amz'});
+      expect(t.exists('c_amz'), isFalse);
+      expect(t.roots.contains('receipts'), isFalse);
+      expect(t.exists('other'), isTrue);
+    });
+
+    test('tree helpers', () {
+      expect(tax.path('c_big'), 'קבלות/אמזון/הזמנות גדולות');
+      expect(tax.subtree('receipts'), {'receipts', 'c_amz', 'c_big'});
+      expect(tax.depth('c_big'), 2);
+      expect(tax.flatTree.indexOf('c_amz'), tax.flatTree.indexOf('receipts') + 1);
+      expect(tax.isProtected('family'), isTrue);
+      expect(tax.isProtected('c_amz'), isFalse);
+    });
+
+    test('json round trip', () {
+      final back = Taxonomy.customsFromJson(tax.customsJson());
+      expect(Taxonomy(customs: back).customsJson(), tax.customsJson());
+      expect(back[2].parent, 'c_amz');
+      expect(Taxonomy.customsFromJson('garbage'), isEmpty);
     });
   });
 }

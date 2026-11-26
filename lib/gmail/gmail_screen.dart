@@ -8,6 +8,7 @@ import '../core/stats.dart';
 import '../widgets/charts.dart';
 import '../widgets/common.dart';
 import 'classifier.dart';
+import 'categories_page.dart';
 import 'diagnostics_page.dart';
 
 class GmailScreen extends StatelessWidget {
@@ -49,10 +50,10 @@ class _GmailBody extends StatelessWidget {
     final busy = s.progress != null;
     final days = s.periodDays;
     final events = s.gmailEvents;
-    final byCat = <MailCategory, List<MailMeta>>{};
-    for (final m in s.mail.where((m) => !m.isSent)) {
-      byCat.putIfAbsent(m.category ?? MailCategory.other, () => []).add(m);
-    }
+    final tax = s.taxonomy;
+    final byCat = s.mailByCategory();
+    // A parent's numbers include its sub-categories.
+    List<MailMeta> inTree(String k) => [for (final x in tax.subtree(k)) ...?byCat[x]];
     final senders = <String, List<MailMeta>>{};
     for (final m in s.mail.where((m) => !m.isSent)) {
       senders.putIfAbsent(m.sender, () => []).add(m);
@@ -113,25 +114,38 @@ class _GmailBody extends StatelessWidget {
         SectionCard(
           title: 'סיווג',
           child: Column(children: [
-            for (final c in MailCategory.values)
-              if (byCat[c] != null)
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: Icon(_icon(c)),
-                  title: Text(c.label),
-                  subtitle: Text('${byCat[c]!.where((m) => m.isUnread).length} לא נקראו · '
-                      '${formatBytes(byCat[c]!.fold(0, (a, m) => a + m.size))}'),
-                  trailing: Text(formatCount(byCat[c]!.length), style: Theme.of(context).textTheme.titleMedium),
-                  onTap: () => Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => MailListPage(title: c.label, categories: {c}))),
-                ),
+            for (final k in tax.flatTree)
+              if (inTree(k).isNotEmpty)
+                () {
+                  final list = inTree(k);
+                  final depth = tax.depth(k);
+                  return ListTile(
+                    contentPadding: EdgeInsetsDirectional.only(start: 24.0 * depth),
+                    leading: Icon(depth > 0 ? Icons.subdirectory_arrow_left : categoryIcon(tax, k)),
+                    title: Text(tax.label(k)),
+                    subtitle: Text('${list.where((m) => m.isUnread).length} לא נקראו · '
+                        '${formatBytes(list.fold(0, (a, m) => a + m.size))}'),
+                    trailing: Text(formatCount(list.length), style: Theme.of(context).textTheme.titleMedium),
+                    onTap: () => Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => MailListPage(title: tax.path(k), categories: tax.subtree(k)))),
+                  );
+                }(),
+            Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: TextButton.icon(
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CategoriesPage())),
+                icon: const Icon(Icons.tune),
+                label: const Text('ניהול קטגוריות'),
+              ),
+            ),
           ]),
         ),
         SectionCard(
           title: 'אחסון לפי סיווג',
           child: StorageBars([
-            for (final e in byCat.entries)
-              StorageSlice(e.key.label, e.value.fold(0, (a, m) => a + m.size), e.value.length),
+            for (final k in tax.roots)
+              if (inTree(k).isNotEmpty)
+                StorageSlice(tax.label(k), inTree(k).fold(0, (a, m) => a + m.size), inTree(k).length),
           ]),
         ),
         SectionCard(
@@ -144,7 +158,7 @@ class _GmailBody extends StatelessWidget {
                 title: Text(e.value.first.senderName.isNotEmpty ? e.value.first.senderName : e.key,
                     maxLines: 1, overflow: TextOverflow.ellipsis),
                 subtitle: Text(
-                  '${e.key} · ${e.value.first.category?.label ?? ''}'
+                  '${e.key} · ${tax.label(e.value.first.category ?? 'other')}'
                   '${e.value.any((m) => m.listUnsubscribe.isNotEmpty) ? ' · רשימת תפוצה' : ''}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -175,7 +189,7 @@ class _GmailBody extends StatelessWidget {
   }
 }
 
-IconData _icon(MailCategory c) => switch (c) {
+IconData categoryIcon(Taxonomy tax, String key) => switch (tax.builtIn(key)) {
       MailCategory.family => Icons.family_restroom,
       MailCategory.friends => Icons.people_outline,
       MailCategory.receipts => Icons.receipt_long_outlined,
@@ -187,12 +201,13 @@ IconData _icon(MailCategory c) => switch (c) {
       MailCategory.notifications => Icons.notifications_none,
       MailCategory.personal => Icons.person_outline,
       MailCategory.other => Icons.inbox_outlined,
+      null => Icons.folder_outlined,
     };
 
 /// Messages of one category or sender, with age filter and trash/archive.
 class MailListPage extends StatefulWidget {
   final String title;
-  final Set<MailCategory>? categories;
+  final Set<String>? categories; // keys (already expanded to sub-categories)
   final Set<String>? senders;
   const MailListPage({super.key, required this.title, this.categories, this.senders});
 
@@ -230,12 +245,35 @@ class _MailListPageState extends State<MailListPage> {
       includeStarred: true,
     );
     final chosen = msgs.where(isChosen).toList();
-    final protected = widget.categories?.any((c) => c.isProtected) ?? false;
+    final protected = widget.categories?.any(s.taxonomy.isProtected) ?? false;
     final busy = s.progress != null;
     final unsub = msgs.map((m) => m.listUnsubscribe).firstWhere((u) => u.isNotEmpty, orElse: () => '');
 
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          if (widget.senders?.length == 1)
+            IconButton(
+              tooltip: 'סיווג השולח',
+              icon: const Icon(Icons.drive_file_move_outline),
+              onPressed: () async {
+                final sender = widget.senders!.first;
+                final tax = s.taxonomy;
+                final picked = await pickCategory(context, tax,
+                    title: 'לסווג תמיד את $sender כ…',
+                    current: tax.senderOverrides[sender],
+                    allowAuto: true);
+                if (picked == null) return;
+                await s.setSenderCategory(sender, picked.isEmpty ? null : picked);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      content: Text(picked.isEmpty ? 'השולח יסווג אוטומטית' : 'השולח יסווג כ"${tax.path(picked)}"')));
+                }
+              },
+            ),
+        ],
+      ),
       body: Column(children: [
         if (s.progress != null) LinearProgressIndicator(value: s.progress!.fraction),
         SingleChildScrollView(

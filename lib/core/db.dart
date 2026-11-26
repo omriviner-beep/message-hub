@@ -40,7 +40,7 @@ class AppDb {
         'id': m.id, 'sender': m.sender, 'sender_name': m.senderName, 'subject': m.subject,
         'snippet': m.snippet, 'date_ms': m.date.millisecondsSinceEpoch,
         'labels': m.labels.join(','), 'unsub': m.listUnsubscribe, 'size': m.size,
-        'category': m.category?.name,
+        'category': m.category,
       }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
     await b.commit(noResult: true);
@@ -60,7 +60,7 @@ class AppDb {
           labels: (r['labels'] as String).split(',').where((l) => l.isNotEmpty).toList(),
           listUnsubscribe: r['unsub'] as String,
           size: r['size'] as int,
-          category: MailCategory.values.asNameMap()[r['category']],
+          category: r['category'] as String?,
         ),
     ];
   }

@@ -173,8 +173,9 @@ class AppState extends ChangeNotifier {
                 'כדי לסרוק הודעות ישנות יותר, שנה את שאילתת החיפוש במסך ההגדרות.'
           : null;
       final clf = MailClassifier(cfg, contacted: await db.contacted());
-      for (var i = 0; i < fresh.length; i += 200) {
-        final chunk = fresh.sublist(i, (i + 200).clamp(0, fresh.length));
+      final tax = taxonomy;
+      for (var i = 0; i < fresh.length; i += 100) {
+        final chunk = fresh.sublist(i, (i + 100).clamp(0, fresh.length));
         final got = await gmail.fetchMeta(
           chunk,
           onProgress: (d) {
@@ -183,7 +184,7 @@ class AppState extends ChangeNotifier {
           },
         );
         for (final m in got) {
-          m.category = clf.classify(m);
+          m.category = clf.classifyKey(m, tax);
         }
         // Saved per chunk: an interrupted scan resumes where it stopped.
         await db.upsertMail(got);
@@ -199,18 +200,56 @@ class AppState extends ChangeNotifier {
 
   Future<void> reclassify() async {
     final clf = MailClassifier(settings.classifierConfig(), contacted: await db.contacted());
+    final tax = taxonomy;
     final all = await db.allMail();
     for (final m in all) {
-      m.category = clf.classify(m);
+      m.category = clf.classifyKey(m, tax);
     }
     await db.upsertMail(all);
     mail = all;
     notifyListeners();
   }
 
+  Taxonomy get taxonomy => settings.taxonomy();
+
+  /// Mail per category key, counting each message once under its own key.
+  Map<String, List<MailMeta>> mailByCategory() {
+    final out = <String, List<MailMeta>>{};
+    for (final m in mail) {
+      if (!m.isSent) out.putIfAbsent(m.category ?? MailCategory.other.name, () => []).add(m);
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------- category editing
+
+  Future<void> saveCustomCategory(CustomCategory c) async {
+    settings.saveCustomCategory(c);
+    await reclassify();
+  }
+
+  Future<void> deleteCustomCategory(String id) async {
+    settings.deleteCustomCategory(id);
+    await reclassify();
+  }
+
+  Future<void> setCategoryEnabled(MailCategory c, bool enabled) async {
+    final d = settings.disabledCategories;
+    enabled ? d.remove(c) : d.add(c);
+    settings.disabledCategories = d;
+    await reclassify();
+  }
+
+  /// "Always file this sender under ..." (null clears it).
+  Future<void> setSenderCategory(String sender, String? key) async {
+    settings.setSenderOverride(sender, key);
+    await reclassify();
+  }
+
   /// Never touches starred mail; Gmail-"important" only if [includeImportant].
+  /// [categories] are keys; pass `taxonomy.subtree(key)` to include sub-categories.
   List<MailMeta> selectMail({
-    Set<MailCategory>? categories,
+    Set<String>? categories,
     Set<String>? senders,
     int? olderThanDays,
     bool unreadOnly = false,
@@ -251,16 +290,25 @@ class AppState extends ChangeNotifier {
   });
 
   Future<void> labelMail() => _run('הוספת תוויות', () async {
-    final groups = <MailCategory, List<String>>{};
+    final tax = taxonomy;
+    final groups = <String, List<String>>{};
     for (final m in mail) {
-      if (m.category != null && m.category != MailCategory.other && !m.isSent) {
+      if (m.category != null && m.category != MailCategory.other.name && !m.isSent) {
         groups.putIfAbsent(m.category!, () => []).add(m.id);
       }
     }
-    final names = {for (final c in groups.keys) c: '$gmailLabelPrefix/${c.label}'};
-    final ids = await gmail.ensureLabels([gmailLabelPrefix, ...names.values]);
+    // Nested labels: "ניקוי/קבלות/אמזון" needs "ניקוי/קבלות" to exist as well.
+    final names = {for (final k in groups.keys) k: '$gmailLabelPrefix/${tax.path(k)}'};
+    final all = <String>{gmailLabelPrefix};
+    for (final n in names.values) {
+      final parts = n.split('/');
+      for (var i = 1; i <= parts.length; i++) {
+        all.add(parts.take(i).join('/'));
+      }
+    }
+    final ids = await gmail.ensureLabels(all.toList()..sort((a, b) => a.length.compareTo(b.length)));
     for (final e in groups.entries) {
-      _progress('מתייג ${e.key.label}...');
+      _progress('מתייג ${tax.label(e.key)}...');
       await gmail.modify(e.value, add: [ids[names[e.key]]!]);
     }
   });

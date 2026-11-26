@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../gmail/classifier.dart';
@@ -43,7 +45,64 @@ class Settings {
   String get waMyName => _p.getString('waMyName') ?? '';
   set waMyName(String v) => _p.setString('waMyName', v);
 
+  // ------------------------------------------------------------- categories
+
+  Set<MailCategory> get disabledCategories =>
+      {for (final n in _list('disabledCategories')) ?MailCategory.values.asNameMap()[n]};
+  set disabledCategories(Set<MailCategory> v) =>
+      _p.setStringList('disabledCategories', [for (final c in v) c.name]);
+
+  List<CustomCategory> get customCategories => Taxonomy.customsFromJson(_p.getString('customCategories'));
+  set customCategories(List<CustomCategory> v) =>
+      _p.setString('customCategories', Taxonomy(customs: v).customsJson());
+
+  Map<String, String> get senderOverrides => Taxonomy.overridesFromJson(_p.getString('senderOverrides'));
+  set senderOverrides(Map<String, String> v) => _p.setString('senderOverrides', jsonEncode(v));
+
+  Taxonomy taxonomy() => Taxonomy(
+        disabled: disabledCategories,
+        customs: customCategories,
+        senderOverrides: senderOverrides,
+      );
+
+  void saveCustomCategory(CustomCategory c) {
+    final list = customCategories;
+    final i = list.indexWhere((x) => x.id == c.id);
+    if (i >= 0) {
+      list[i] = c;
+    } else {
+      list.add(c);
+    }
+    customCategories = list;
+  }
+
+  /// Children move up to the deleted category's parent; overrides pointing at it are dropped.
+  void deleteCustomCategory(String id) {
+    final list = customCategories;
+    final gone = list.where((c) => c.id == id).firstOrNull;
+    if (gone == null) return;
+    customCategories = [
+      for (final c in list)
+        if (c.id != id) c.parent == id ? c.copyWith(parent: () => gone.parent) : c,
+    ];
+    senderOverrides = {
+      for (final e in senderOverrides.entries)
+        if (e.value != id) e.key: e.value,
+    };
+  }
+
+  void setSenderOverride(String sender, String? key) {
+    final m = senderOverrides;
+    if (key == null) {
+      m.remove(sender);
+    } else {
+      m[sender] = key;
+    }
+    senderOverrides = m;
+  }
+
   ClassifierConfig classifierConfig() => ClassifierConfig(
+        disabled: disabledCategories,
         myAddresses: myAddresses.map((e) => e.toLowerCase()).toSet(),
         familyAddresses: familyAddresses.map((e) => e.toLowerCase()).toSet(),
         familyNames: familyNames.map((e) => e.toLowerCase()).toList(),

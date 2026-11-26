@@ -4,6 +4,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:message_hub/app_state.dart';
 import 'package:message_hub/core/db.dart';
 import 'package:message_hub/core/settings.dart';
+import 'package:message_hub/gmail/categories_page.dart';
 import 'package:message_hub/gmail/classifier.dart';
 import 'package:message_hub/gmail/gmail_screen.dart';
 import 'package:message_hub/gmail/gmail_service.dart';
@@ -37,7 +38,7 @@ void main() {
             date: now.subtract(Duration(hours: i * 7)),
             labels: [if (i % 5 == 0) 'SENT' else 'INBOX', if (i % 3 == 0) 'UNREAD', if (i.isOdd) 'IMPORTANT', if (i == 3) 'STARRED'],
             size: 20000 + i,
-            category: i.isEven ? MailCategory.promotions : MailCategory.family,
+            category: i.isEven ? 'promotions' : 'family',
           ),
       ];
       final d = now.subtract(const Duration(days: 1));
@@ -82,5 +83,20 @@ void main() {
     expect(find.byType(CheckboxListTile), findsWidgets);
     expect(find.textContaining('0 נבחרו מתוך'), findsOneWidget);
     expect(find.textContaining('★ '), findsNWidgets(2)); // legend + the starred message
+
+    // Category management screens render.
+    tester.state<NavigatorState>(find.byType(Navigator).first).pop();
+    await tester.pumpAndSettle();
+    tester.state<NavigatorState>(find.byType(Navigator).first).push(
+        MaterialPageRoute(builder: (_) => const CategoriesPage()));
+    await tester.pumpAndSettle();
+    expect(find.text('קטגוריות מובנות'), findsOneWidget);
+    await tester.tap(find.text('קטגוריה חדשה'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).at(0), 'חנות');
+    await tester.enterText(find.byType(TextField).at(1), 'store.com');
+    await tester.pumpAndSettle();
+    expect(find.textContaining('החוקים מתאימים ל-'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

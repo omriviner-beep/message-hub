@@ -1,6 +1,10 @@
 /// Rule-based e-mail classifier (Hebrew + English). First matching rule wins.
 library;
 
+import 'taxonomy.dart';
+
+export 'taxonomy.dart';
+
 enum MailCategory {
   family('משפחה'),
   friends('חברים'),
@@ -32,7 +36,7 @@ class MailMeta {
   final List<String> labels; // growable copy, so archive can drop INBOX
   final String listUnsubscribe;
   final int size;
-  MailCategory? category;
+  String? category; // MailCategory.name or a custom category id
 
   MailMeta({
     required this.id,
@@ -122,6 +126,7 @@ class ClassifierConfig {
   final Set<String> friendAddresses;
   final bool friendsFromSent;
   final Map<MailCategory, Rules> extraRules;
+  final Set<MailCategory> disabled;
 
   const ClassifierConfig({
     this.myAddresses = const {},
@@ -130,6 +135,7 @@ class ClassifierConfig {
     this.friendAddresses = const {},
     this.friendsFromSent = true,
     this.extraRules = const {},
+    this.disabled = const {},
   });
 }
 
@@ -161,6 +167,8 @@ class MailClassifier {
         !m.labels.contains('CATEGORY_PROMOTIONS');
   }
 
+  /// Built-in rules only. Disabled categories are skipped, so their mail falls
+  /// through to the next matching category.
   MailCategory classify(MailMeta m) {
     final addr = m.sender, dom = domainOf(addr);
     final name = m.senderName.toLowerCase();
@@ -168,50 +176,78 @@ class MailClassifier {
     final text = '$subject ${m.snippet.toLowerCase()}';
     final labels = m.labels.toSet();
     Rules r(MailCategory c) => rules[c]!;
+    bool on(MailCategory c) => !cfg.disabled.contains(c);
+    final human = isHumanSender(m);
 
     if (labels.contains('SENT') || cfg.myAddresses.contains(addr)) return MailCategory.other;
 
-    if (cfg.familyAddresses.contains(addr) ||
-        (isHumanSender(m) && cfg.familyNames.any((n) => name.contains(n) || addr.contains(n)))) {
-      return MailCategory.family;
+    final candidates = <(MailCategory, bool Function())>[
+      (
+        MailCategory.family,
+        () =>
+            cfg.familyAddresses.contains(addr) ||
+            (human && cfg.familyNames.any((n) => name.contains(n) || addr.contains(n))),
+      ),
+      (MailCategory.friends, () => cfg.friendAddresses.contains(addr)),
+      (
+        MailCategory.friends,
+        () => cfg.friendsFromSent && contacted.contains(addr) && personalDomains.contains(dom) && human,
+      ),
+      (MailCategory.receipts, () => _hasKeyword(subject, r(MailCategory.receipts).keywords)),
+      (MailCategory.finance, () => _domainMatches(dom, r(MailCategory.finance).domains)),
+      (
+        MailCategory.travel,
+        () =>
+            _domainMatches(dom, r(MailCategory.travel).domains) ||
+            _hasKeyword(subject, r(MailCategory.travel).keywords),
+      ),
+      (
+        MailCategory.receipts,
+        () =>
+            _domainMatches(dom, r(MailCategory.receipts).domains) &&
+            _hasKeyword(text, r(MailCategory.receipts).keywords),
+      ),
+      (
+        MailCategory.finance,
+        () => _hasKeyword(subject, r(MailCategory.finance).keywords) && m.listUnsubscribe.isEmpty,
+      ),
+      (
+        MailCategory.social,
+        () => _domainMatches(dom, r(MailCategory.social).domains) || labels.contains('CATEGORY_SOCIAL'),
+      ),
+      (
+        MailCategory.promotions,
+        () =>
+            labels.contains('CATEGORY_PROMOTIONS') ||
+            _domainMatches(dom, r(MailCategory.promotions).domains) ||
+            (m.listUnsubscribe.isNotEmpty && _hasKeyword(text, r(MailCategory.promotions).keywords)),
+      ),
+      (MailCategory.newsletters, () => m.listUnsubscribe.isNotEmpty || labels.contains('CATEGORY_FORUMS')),
+      (
+        MailCategory.notifications,
+        () => labels.contains('CATEGORY_UPDATES') || _automated.hasMatch(addr.split('@').first),
+      ),
+      (MailCategory.personal, () => human),
+    ];
+    for (final (cat, test) in candidates) {
+      if (on(cat) && test()) return cat;
     }
-    if (cfg.friendAddresses.contains(addr)) return MailCategory.friends;
-    if (cfg.friendsFromSent &&
-        contacted.contains(addr) &&
-        personalDomains.contains(dom) &&
-        isHumanSender(m)) {
-      return MailCategory.friends;
-    }
-
-    if (_hasKeyword(subject, r(MailCategory.receipts).keywords)) return MailCategory.receipts;
-    if (_domainMatches(dom, r(MailCategory.finance).domains)) return MailCategory.finance;
-    if (_domainMatches(dom, r(MailCategory.travel).domains) ||
-        _hasKeyword(subject, r(MailCategory.travel).keywords)) {
-      return MailCategory.travel;
-    }
-    if (_domainMatches(dom, r(MailCategory.receipts).domains) &&
-        _hasKeyword(text, r(MailCategory.receipts).keywords)) {
-      return MailCategory.receipts;
-    }
-    if (_hasKeyword(subject, r(MailCategory.finance).keywords) && m.listUnsubscribe.isEmpty) {
-      return MailCategory.finance;
-    }
-
-    if (_domainMatches(dom, r(MailCategory.social).domains) || labels.contains('CATEGORY_SOCIAL')) {
-      return MailCategory.social;
-    }
-    if (labels.contains('CATEGORY_PROMOTIONS') ||
-        _domainMatches(dom, r(MailCategory.promotions).domains) ||
-        (m.listUnsubscribe.isNotEmpty && _hasKeyword(text, r(MailCategory.promotions).keywords))) {
-      return MailCategory.promotions;
-    }
-    if (m.listUnsubscribe.isNotEmpty || labels.contains('CATEGORY_FORUMS')) {
-      return MailCategory.newsletters;
-    }
-    if (labels.contains('CATEGORY_UPDATES') || _automated.hasMatch(addr.split('@').first)) {
-      return MailCategory.notifications;
-    }
-    if (isHumanSender(m)) return MailCategory.personal;
     return MailCategory.other;
+  }
+
+  /// Full classification, as a category key (built-in name or custom id):
+  /// sender override > top-level custom category > built-in rules, then refined
+  /// into the deepest matching sub-category.
+  String classifyKey(MailMeta m, Taxonomy tax) {
+    if (m.labels.contains('SENT') || cfg.myAddresses.contains(m.sender)) return MailCategory.other.name;
+    final forced = tax.senderOverrides[m.sender];
+    if (forced != null && tax.exists(forced)) return forced;
+    String key = tax.customs.where((c) => c.parent == null && c.matches(m)).firstOrNull?.id ?? classify(m).name;
+    for (var depth = 0; depth < 10; depth++) {
+      final child = tax.customs.where((c) => c.parent == key && c.matches(m)).firstOrNull;
+      if (child == null) break;
+      key = child.id;
+    }
+    return key;
   }
 }
