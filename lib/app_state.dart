@@ -80,6 +80,7 @@ class AppState extends ChangeNotifier {
     error = null;
     progress = Progress(label);
     notifyListeners();
+    await NativeBridge.keepScreenOn(true);
     try {
       return await f();
     } catch (e) {
@@ -88,6 +89,7 @@ class AppState extends ChangeNotifier {
           '${describeError(e) == raw ? '' : '\n\nפרטים טכניים: ${raw.length > 300 ? '${raw.substring(0, 300)}…' : raw}'}';
       return null;
     } finally {
+      await NativeBridge.keepScreenOn(false);
       progress = null;
       notifyListeners();
     }

@@ -59,6 +59,13 @@ class NativeBridge {
     ];
   }
 
+  static Future<void> keepScreenOn(bool on) async {
+    if (!supported) return;
+    try {
+      await _ch.invokeMethod('keepScreenOn', {'on': on});
+    } catch (_) {}
+  }
+
   static Future<bool> notificationAccessGranted() async =>
       supported && (await _ch.invokeMethod<bool>('notificationAccessGranted') ?? false);
 

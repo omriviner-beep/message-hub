@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -36,6 +37,15 @@ class MainActivity : FlutterActivity() {
                     "readSms" -> background { SmsReader(applicationContext).read(since) }
                     "waNotifications" -> background { NotificationStore(applicationContext).since(since) }
                     "clearWaNotifications" -> background { NotificationStore(applicationContext).clear(); null }
+                    "keepScreenOn" -> {
+                        // Android cuts network for apps once the screen turns off; long scans need it on.
+                        if (call.argument<Boolean>("on") == true) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                        result.success(null)
+                    }
                     "notificationAccessGranted" -> result.success(notificationAccessGranted())
                     "openNotificationAccessSettings" -> {
                         openNotificationSettings()
