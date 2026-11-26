@@ -147,7 +147,7 @@ class GmailService {
   GmailService({String Function()? webClientId}) : webClientId = webClientId ?? (() => '');
 
   /// Shared by every call so scans and cleanups together respect the quota.
-  final limiter = RateLimiter();
+  final limiter = RateLimiter(perSecond: 20);
 
   /// Called when Google's per-minute quota is hit and the service is waiting.
   void Function(Duration wait)? onQuotaWait;
@@ -155,6 +155,7 @@ class GmailService {
   GoogleSignInAccount? account;
   gm.GmailApi? _api;
   http.Client? _client;
+  String? _token;
   bool _initialized = false;
 
   bool get signedIn => account != null;
@@ -202,8 +203,11 @@ class GmailService {
     await GoogleSignIn.instance.disconnect();
   }
 
+  /// Reuses one HTTP client (and its open connections) until the token changes.
   void _setClient(GoogleSignInClientAuthorization authz) {
+    if (_api != null && authz.accessToken == _token) return;
     _client?.close();
+    _token = authz.accessToken;
     _client = authz.authClient(scopes: gmailScopes);
     _api = gm.GmailApi(_client!);
   }
@@ -238,7 +242,7 @@ class GmailService {
   Future<List<gm.Message>> _getMeta(List<String> ids, {void Function(int)? onProgress}) async {
     final api = await _fresh();
     return pooled(ids, (id) => api.users.messages.get('me', id, format: 'metadata', metadataHeaders: _headers),
-        limiter: limiter, onProgress: onProgress, onQuotaWait: onQuotaWait);
+        parallel: 4, limiter: limiter, onProgress: onProgress, onQuotaWait: onQuotaWait);
   }
 
   Future<List<MailMeta>> fetchMeta(List<String> ids, {void Function(int)? onProgress}) async =>
@@ -260,7 +264,7 @@ class GmailService {
   Future<void> trash(List<String> ids, {void Function(int)? onProgress}) async {
     final api = await _fresh();
     await pooled(ids, (id) => api.users.messages.trash('me', id),
-        limiter: limiter, onProgress: onProgress, onQuotaWait: onQuotaWait);
+        parallel: 4, limiter: limiter, onProgress: onProgress, onQuotaWait: onQuotaWait);
   }
 
   Future<void> modify(List<String> ids, {List<String> add = const [], List<String> remove = const []}) async {
@@ -288,4 +292,75 @@ class GmailService {
     }
     return existing;
   }
+
+  /// Step-by-step connection test, so a failing scan can be pinned down.
+  Future<List<DiagStep>> diagnose(String query, {void Function(DiagStep)? onStep}) async {
+    final steps = <DiagStep>[];
+    Future<T?> step<T>(String name, Future<T> Function() f, String Function(T) ok) async {
+      final sw = Stopwatch()..start();
+      try {
+        final r = await f().timeout(const Duration(seconds: 30));
+        final d = DiagStep(name, true, '${ok(r)} (${sw.elapsedMilliseconds}ms)');
+        steps.add(d);
+        onStep?.call(d);
+        return r;
+      } catch (e) {
+        final d = DiagStep(name, false, '${e.runtimeType}: $e (${sw.elapsedMilliseconds}ms)');
+        steps.add(d);
+        onStep?.call(d);
+        return null;
+      }
+    }
+
+    await step('DNS www.google.com', () => InternetAddress.lookup('www.google.com'), (a) => a.map((x) => x.address).join(', '));
+    await step('DNS gmail.googleapis.com', () => InternetAddress.lookup('gmail.googleapis.com'),
+        (a) => a.map((x) => x.address).join(', '));
+    final api = await step('אסימון גישה', _fresh, (_) => 'התקבל');
+    if (api == null) return steps;
+    await step('פרופיל', () => api.users.getProfile('me'), (p) => '${p.emailAddress}, ${p.messagesTotal} הודעות');
+    final list = await step('רשימת הודעות ("$query")', () => api.users.messages.list('me', q: query, maxResults: 40),
+        (r) => '${r.messages?.length ?? 0} מזהים, עוד עמודים: ${r.nextPageToken != null}');
+    final ids = (list?.messages ?? []).map((m) => m.id!).toList();
+    if (ids.isEmpty) return steps;
+    Future<gm.Message> get(String id) => api.users.messages.get('me', id, format: 'metadata', metadataHeaders: _headers);
+    await step('5 הודעות אחת אחרי השנייה', () async {
+      for (final id in ids.take(5)) {
+        await get(id);
+      }
+      return 5;
+    }, (n) => '$n תקינות');
+    for (final par in [4, 8]) {
+      final batch = ids.skip(5).take(16).toList();
+      await step('${batch.length} הודעות, $par במקביל', () async {
+        var fails = 0;
+        Object? first;
+        await Future.wait([
+          for (var i = 0; i < par; i++)
+            () async {
+              for (var j = i; j < batch.length; j += par) {
+                try {
+                  await get(batch[j]);
+                } catch (e) {
+                  fails++;
+                  first ??= e;
+                }
+              }
+            }(),
+        ]);
+        if (fails > 0) throw StateError('$fails/${batch.length} נכשלו. ראשונה: $first');
+        return batch.length;
+      }, (n) => '$n תקינות');
+    }
+    return steps;
+  }
+}
+
+class DiagStep {
+  final String name;
+  final bool ok;
+  final String detail;
+  const DiagStep(this.name, this.ok, this.detail);
+
+  @override
+  String toString() => '${ok ? '✓' : '✗'} $name: $detail';
 }

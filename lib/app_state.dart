@@ -83,7 +83,9 @@ class AppState extends ChangeNotifier {
     try {
       return await f();
     } catch (e) {
-      error = '$label נכשל: ${describeError(e)}';
+      final raw = '$e';
+      error = '$label נכשל: ${describeError(e)}'
+          '${describeError(e) == raw ? '' : '\n\nפרטים טכניים: ${raw.length > 300 ? '${raw.substring(0, 300)}…' : raw}'}';
       return null;
     } finally {
       progress = null;

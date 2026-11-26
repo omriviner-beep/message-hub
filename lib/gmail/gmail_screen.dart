@@ -8,6 +8,7 @@ import '../core/stats.dart';
 import '../widgets/charts.dart';
 import '../widgets/common.dart';
 import 'classifier.dart';
+import 'diagnostics_page.dart';
 
 class GmailScreen extends StatelessWidget {
   const GmailScreen({super.key});
@@ -83,6 +84,13 @@ class _GmailBody extends StatelessWidget {
                       },
                 icon: const Icon(Icons.label_outline),
                 label: const Text('תיוג ב-Gmail'),
+              ),
+              TextButton.icon(
+                onPressed: busy
+                    ? null
+                    : () => Navigator.push(context, MaterialPageRoute(builder: (_) => const DiagnosticsPage())),
+                icon: const Icon(Icons.network_check),
+                label: const Text('בדיקת חיבור'),
               ),
             ]),
           ]),
