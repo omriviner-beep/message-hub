@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'core/db.dart';
+import 'core/edition.dart';
 import 'core/models.dart';
 import 'core/native.dart';
 import 'core/settings.dart';
@@ -69,9 +70,9 @@ class AppState extends ChangeNotifier {
       gmailAddress = await gmail.email().catchError((_) => null);
     }
     if (isAndroid) {
-      smsPermission = await Permission.sms.isGranted;
+      smsPermission = smsSupportedInEdition && await Permission.sms.isGranted;
       storagePermission = await Permission.manageExternalStorage.isGranted;
-      await refreshWhatsAppNotifications();
+      if (waNotificationsInEdition) await refreshWhatsAppNotifications();
       if (smsPermission) await loadSms();
       if (storagePermission) await scanWhatsAppMedia();
     }
@@ -355,7 +356,7 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> refreshWhatsAppNotifications() async {
-    if (!isAndroid) return;
+    if (!isAndroid || !waNotificationsInEdition) return;
     waNotificationAccess = await NativeBridge.notificationAccessGranted();
     waNotifications = await NativeBridge.whatsAppNotifications();
     notifyListeners();

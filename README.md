@@ -63,8 +63,21 @@
 flutter pub get
 flutter test                      # 36 בדיקות
 flutter run                       # עם טלפון מחובר בכבל
-flutter build apk --release --split-per-abi
+# גרסה מלאה (SMS + ספירת התראות וואטסאפ). Play Protect חוסם התקנה שלה מחוץ לחנות
+flutter build apk --release --flavor full --split-per-abi
+# גרסה קלה: בלי SMS ובלי גישה להתראות, ולכן Play Protect לא חוסם אותה
+flutter build apk --release --flavor lite --dart-define=LITE=true --split-per-abi
 ```
+
+| | מלאה (`full`) | קלה (`lite`) |
+|---|---|---|
+| Gmail, קטגוריות, ניקוי | ✅ | ✅ |
+| אחסון וניקוי מדיה של וואטסאפ, ייבוא צ'אטים | ✅ | ✅ |
+| SMS | ✅ | ❌ |
+| ספירת הודעות וואטסאפ מהתראות | ✅ | ❌ |
+| התקנה בלי לכבות את Play Protect | ❌ | ✅ |
+
+שתי הגרסאות משתמשות באותו שם חבילה ובאותו מפתח חתימה, אז אפשר לעבור ביניהן בהתקנה רגילה מעל הגרסה הקיימת, בלי לאבד נתונים.
 
 ### בנייה לאייפון
 

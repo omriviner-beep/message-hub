@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lite edition: strip the permissions that make Play Protect block sideloading. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.READ_SMS" tools:node="remove" />
+    <!-- contacts are only used to name SMS senders -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" tools:node="remove" />
+
+    <application>
+        <service
+            android:name="com.personal.message_hub.WhatsAppNotificationListener"
+            tools:node="remove" />
+    </application>
+</manifest>

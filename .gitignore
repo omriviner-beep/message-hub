@@ -48,3 +48,4 @@ app.*.map.json
 .widget_preview/
 message-hub-arm64.apk
 android/build/
+message-hub-lite-arm64.apk

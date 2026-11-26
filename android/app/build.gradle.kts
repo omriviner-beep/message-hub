@@ -29,6 +29,17 @@ android {
         versionName = flutter.versionName
     }
 
+    // "full": everything. "lite": no SMS / notification access, so Play Protect
+    // does not block sideloading it. Build with --flavor lite --dart-define=LITE=true
+    flavorDimensions += "edition"
+    productFlavors {
+        create("full") { dimension = "edition" }
+        create("lite") {
+            dimension = "edition"
+            versionNameSuffix = "-lite"
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.

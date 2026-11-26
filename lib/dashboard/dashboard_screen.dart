@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../core/edition.dart';
 import '../core/format.dart';
 import '../core/models.dart';
 import '../core/stats.dart';
@@ -16,7 +17,8 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  Set<Source> sources = Source.values.toSet();
+  static final available = [for (final s in Source.values) if (s != Source.sms || !isLite) s];
+  Set<Source> sources = available.toSet();
 
   @override
   Widget build(BuildContext context) {
@@ -45,7 +47,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         trailing: const Legend(),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           Wrap(spacing: 8, children: [
-            for (final src in Source.values)
+            for (final src in available)
               FilterChip(
                 label: Text(src.label),
                 selected: sources.contains(src),
@@ -68,7 +70,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       SectionCard(
         title: 'לפי מקור',
         child: Column(children: [
-          for (final src in Source.values)
+          for (final src in available)
             ListTile(
               contentPadding: EdgeInsets.zero,
               leading: Icon(switch (src) {

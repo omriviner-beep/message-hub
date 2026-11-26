@@ -3,6 +3,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:message_hub/app_state.dart';
 import 'package:message_hub/core/db.dart';
+import 'package:message_hub/core/edition.dart';
 import 'package:message_hub/core/settings.dart';
 import 'package:message_hub/gmail/categories_page.dart';
 import 'package:message_hub/gmail/classifier.dart';
@@ -53,8 +54,9 @@ void main() {
     await tester.pumpWidget(ChangeNotifierProvider.value(value: state!, child: const MessageHubApp()));
     await tester.pumpAndSettle();
     expect(find.text('הודעות ביום'), findsWidgets);
+    expect(find.text('SMS'), isLite ? findsNothing : findsWidgets);
 
-    for (final tab in ['Gmail', 'וואטסאפ', 'SMS', 'הגדרות', 'סקירה']) {
+    for (final tab in ['Gmail', 'וואטסאפ', if (!isLite) 'SMS', 'הגדרות', 'סקירה']) {
       await tester.tap(find.descendant(of: find.byType(NavigationBar), matching: find.text(tab)));
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull, reason: tab);

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import 'app_state.dart';
 import 'core/db.dart';
+import 'core/edition.dart';
 import 'core/settings.dart';
 import 'dashboard/dashboard_screen.dart';
 import 'gmail/gmail_screen.dart';
@@ -52,7 +53,7 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
   int tab = 0;
-  static const titles = ['סקירה', 'Gmail', 'וואטסאפ', 'SMS', 'הגדרות'];
+  static const titles = ['סקירה', 'Gmail', 'וואטסאפ', if (!isLite) 'SMS', 'הגדרות'];
 
   @override
   void initState() {
@@ -112,7 +113,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
             DashboardScreen(),
             GmailScreen(),
             WhatsAppScreen(),
-            SmsScreen(),
+            if (!isLite) SmsScreen(),
             SettingsScreen(),
           ]),
         ),
@@ -124,7 +125,7 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
           NavigationDestination(icon: Icon(Icons.insights_outlined), label: 'סקירה'),
           NavigationDestination(icon: Icon(Icons.mail_outline), label: 'Gmail'),
           NavigationDestination(icon: Icon(Icons.chat_outlined), label: 'וואטסאפ'),
-          NavigationDestination(icon: Icon(Icons.sms_outlined), label: 'SMS'),
+          if (!isLite) NavigationDestination(icon: Icon(Icons.sms_outlined), label: 'SMS'),
           NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'הגדרות'),
         ],
       ),

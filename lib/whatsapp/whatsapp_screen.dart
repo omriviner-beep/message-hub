@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 import '../app_state.dart';
+import '../core/edition.dart';
 import '../core/format.dart';
 import '../core/models.dart';
 import '../core/native.dart';
@@ -64,7 +65,7 @@ class WhatsAppScreen extends StatelessWidget {
           ),
         ],
         if (s.isAndroid) _MediaCard(s),
-        if (s.isAndroid) _NotificationCard(s),
+        if (s.isAndroid && waNotificationsInEdition) _NotificationCard(s),
         SectionCard(
           title: 'צ\'אטים מיובאים',
           trailing: IconButton.filledTonal(
