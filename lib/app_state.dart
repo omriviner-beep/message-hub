@@ -152,7 +152,11 @@ class AppState extends ChangeNotifier {
       // Sent mail rarely changes who your friends are - collect it once.
       if (cfg.friendsFromSent && (refresh || (await db.contacted()).isEmpty)) {
         _progress('אוסף כתובות מתיקיית "נשלח"...');
-        await db.addContacted(await gmail.contactedAddresses());
+        try {
+          await db.addContacted(await gmail.contactedAddresses());
+        } catch (_) {
+          // Only improves "friends" detection - never worth failing the scan over.
+        }
       }
       _progress('מחפש הודעות...');
       final ids = await gmail.listIds(settings.gmailQuery, max: settings.gmailMax);
@@ -341,6 +345,9 @@ String _decodeUtf8(List<int> bytes) {
 String describeError(Object e) {
   if (isQuotaError(e)) {
     return 'חריגה ממכסת הבקשות של Google. ההודעות שכבר הורדו נשמרו. נסה שוב בעוד דקה והסריקה תמשיך מאותה נקודה.';
+  }
+  if (isTransientError(e)) {
+    return 'אין חיבור יציב לאינטרנט (או שהשרת של Google לא ענה). ההודעות שכבר הורדו נשמרו. בדוק את החיבור ולחץ שוב על סריקה, והיא תמשיך מאותה נקודה.';
   }
   if (e is DetailedApiRequestError) return '${e.message ?? 'שגיאה'} (${e.status})';
   if (e is StateError) return e.message;

@@ -84,7 +84,13 @@ bool isQuotaError(Object e) {
   return e.status == 403 && (text.contains('quota') || text.contains('ratelimit'));
 }
 
-bool _isTransient(Object e) => e is gm.DetailedApiRequestError && (e.status ?? 0) >= 500;
+/// Server hiccups and network drops (Wi-Fi switching, DNS failure, timeouts) - worth retrying.
+bool isTransientError(Object e) =>
+    (e is gm.DetailedApiRequestError && (e.status ?? 0) >= 500) ||
+    e is SocketException ||
+    e is HandshakeException ||
+    e is TimeoutException ||
+    e is http.ClientException;
 
 /// Runs [task] over [items] with at most [parallel] in flight, throttled by [limiter].
 /// Quota errors pause all workers for a minute (the quota window) and retry.
@@ -96,7 +102,9 @@ Future<List<R>> pooled<T, R>(
   void Function(int done)? onProgress,
   void Function(Duration wait)? onQuotaWait,
   Duration quotaPause = const Duration(seconds: 60),
-  int maxRetries = 5,
+  int maxRetries = 6,
+  Duration requestTimeout = const Duration(seconds: 30),
+  Duration Function(int attempt)? backoff,
 }) async {
   final results = <R>[];
   var next = 0, done = 0;
@@ -106,7 +114,7 @@ Future<List<R>> pooled<T, R>(
       for (var attempt = 0;; attempt++) {
         await limiter?.acquire();
         try {
-          results.add(await task(item));
+          results.add(await task(item).timeout(requestTimeout));
           break;
         } catch (e) {
           if (attempt >= maxRetries) rethrow;
@@ -117,8 +125,9 @@ Future<List<R>> pooled<T, R>(
             } else {
               await Future.delayed(quotaPause);
             }
-          } else if (_isTransient(e)) {
-            await Future.delayed(Duration(seconds: 1 << attempt));
+          } else if (isTransientError(e)) {
+            // 1, 2, 4 ... 32 s: rides out a minute-long network drop
+            await Future.delayed(backoff?.call(attempt) ?? Duration(seconds: 1 << attempt));
           } else {
             rethrow;
           }
@@ -216,8 +225,10 @@ class GmailService {
     final ids = <String>[];
     String? token;
     do {
-      final r = await api.users.messages.list('me',
-          q: query.isEmpty ? null : query, maxResults: 500, pageToken: token, labelIds: labelIds);
+      final page = token;
+      final r = (await pooled<int, gm.ListMessagesResponse>([0], (_) => api.users.messages.list('me',
+              q: query.isEmpty ? null : query, maxResults: 500, pageToken: page, labelIds: labelIds),
+          parallel: 1, onQuotaWait: onQuotaWait)).single;
       ids.addAll((r.messages ?? []).map((m) => m.id!));
       token = r.nextPageToken;
     } while (token != null && ids.length < max);

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -274,6 +275,23 @@ void quotaTests() {
       );
       expect(out.toSet(), {for (var i = 0; i < 20; i++) i * 2});
       expect(waits.length, 1);
+    });
+
+    test('pooled rides out network drops (DNS failure, timeout)', () async {
+      var attempts = 0;
+      final out = await pooled<int, int>([1, 2], (i) async {
+        if (i == 1 && attempts++ < 3) {
+          throw const SocketException("Failed host lookup: 'gmail.googleapis.com'");
+        }
+        if (i == 2 && attempts < 5) {
+          attempts++;
+          await Future.delayed(const Duration(milliseconds: 50));
+        }
+        return i;
+      }, parallel: 1, backoff: (_) => Duration.zero, requestTimeout: const Duration(milliseconds: 20));
+      expect(out, [1, 2]);
+      expect(isTransientError(const SocketException('x')), isTrue);
+      expect(isTransientError(TimeoutException('x')), isTrue);
     });
 
     test('pooled gives up after maxRetries and rethrows real errors at once', () async {
