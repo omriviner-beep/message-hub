@@ -8,7 +8,8 @@ String formatBytes(int bytes) {
     v /= 1024;
     i++;
   }
-  return '${v.toStringAsFixed(v >= 100 || i == 0 ? 0 : 1)} ${units[i]}';
+  // Wrapped in direction marks so "537 MB" never gets reordered inside Hebrew text.
+  return '\u200e${v.toStringAsFixed(v >= 100 || i == 0 ? 0 : 1)} ${units[i]}\u200f';
 }
 
 final _num = NumberFormat.decimalPattern('he');

@@ -90,6 +90,12 @@ class _HomeShellState extends State<HomeShell> with WidgetsBindingObserver {
               ),
       ),
       body: Column(children: [
+        if (s.error == null && s.notice != null)
+          MaterialBanner(
+            content: Text(s.notice!),
+            backgroundColor: Theme.of(context).colorScheme.secondaryContainer,
+            actions: [TextButton(onPressed: s.clearError, child: const Text('סגירה'))],
+          ),
         if (s.error != null)
           MaterialBanner(
             content: Text(s.error!),

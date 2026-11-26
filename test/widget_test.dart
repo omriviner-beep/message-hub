@@ -35,7 +35,7 @@ void main() {
             senderName: i.isEven ? 'חנות' : 'אמא',
             subject: 'נושא $i',
             date: now.subtract(Duration(hours: i * 7)),
-            labels: [if (i % 5 == 0) 'SENT' else 'INBOX', if (i % 3 == 0) 'UNREAD'],
+            labels: [if (i % 5 == 0) 'SENT' else 'INBOX', if (i % 3 == 0) 'UNREAD', if (i.isOdd) 'IMPORTANT', if (i == 3) 'STARRED'],
             size: 20000 + i,
             category: i.isEven ? MailCategory.promotions : MailCategory.family,
           ),
@@ -71,5 +71,16 @@ void main() {
     expect(find.byType(MailListPage), findsOneWidget);
     expect(find.text('לאשפה'), findsOneWidget);
     expect(tester.takeException(), isNull);
+
+    // Mail from people is usually "important" in Gmail: it must still be listed, just not pre-selected.
+    tester.state<NavigatorState>(find.byType(Navigator).first).pop();
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(GmailScreen), const Offset(0, 250));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('משפחה').first);
+    await tester.pumpAndSettle();
+    expect(find.byType(CheckboxListTile), findsWidgets);
+    expect(find.textContaining('0 נבחרו מתוך'), findsOneWidget);
+    expect(find.textContaining('★ '), findsNWidgets(2)); // legend + the starred message
   });
 }

@@ -33,6 +33,7 @@ class AppState extends ChangeNotifier {
 
   Progress? progress;
   String? error;
+  String? notice;
 
   List<MailMeta> mail = [];
   String? gmailAddress;
@@ -50,6 +51,7 @@ class AppState extends ChangeNotifier {
 
   void clearError() {
     error = null;
+    notice = null;
     notifyListeners();
   }
 
@@ -166,6 +168,10 @@ class AppState extends ChangeNotifier {
       final ids = await gmail.listIds(settings.gmailQuery, max: settings.gmailMax);
       final known = refresh ? <String>{} : await db.knownMailIds();
       final fresh = ids.where((i) => !known.contains(i)).toList();
+      notice = fresh.isEmpty
+          ? 'אין הודעות חדשות לסריקה (נמצאו ${ids.length} הודעות לפי השאילתה, כולן כבר נסרקו). '
+                'כדי לסרוק הודעות ישנות יותר, שנה את שאילתת החיפוש במסך ההגדרות.'
+          : null;
       final clf = MailClassifier(cfg, contacted: await db.contacted());
       for (var i = 0; i < fresh.length; i += 200) {
         final chunk = fresh.sublist(i, (i + 200).clamp(0, fresh.length));
@@ -209,13 +215,14 @@ class AppState extends ChangeNotifier {
     int? olderThanDays,
     bool unreadOnly = false,
     bool includeImportant = false,
+    bool includeStarred = false,
     bool inboxOnly = false,
   }) {
     final cutoff = olderThanDays == null ? null : DateTime.now().subtract(Duration(days: olderThanDays));
     return mail
         .where(
           (m) =>
-              !m.isStarred &&
+              (includeStarred || !m.isStarred) &&
               (includeImportant || !m.isImportant) &&
               (categories == null || categories.contains(m.category)) &&
               (senders == null || senders.contains(m.sender)) &&

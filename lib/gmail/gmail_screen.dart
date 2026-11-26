@@ -119,8 +119,8 @@ class _GmailBody extends StatelessWidget {
                   contentPadding: EdgeInsets.zero,
                   leading: Icon(_icon(c)),
                   title: Text(c.label),
-                  subtitle: Text('${formatBytes(byCat[c]!.fold(0, (a, m) => a + m.size))} · '
-                      '${byCat[c]!.where((m) => m.isUnread).length} לא נקראו'),
+                  subtitle: Text('${byCat[c]!.where((m) => m.isUnread).length} לא נקראו · '
+                      '${formatBytes(byCat[c]!.fold(0, (a, m) => a + m.size))}'),
                   trailing: Text(formatCount(byCat[c]!.length), style: Theme.of(context).textTheme.titleMedium),
                   onTap: () => Navigator.push(context,
                       MaterialPageRoute(builder: (_) => MailListPage(title: c.label, categories: {c}))),
@@ -204,6 +204,19 @@ class _MailListPageState extends State<MailListPage> {
   int? olderThan;
   bool unreadOnly = false;
   final Set<String> excluded = {};
+  final Set<String> optedIn = {}; // "important" mail the user ticked by hand
+
+  /// Starred mail is never selectable; Gmail-"important" mail starts unticked.
+  bool isChosen(MailMeta m) =>
+      !m.isStarred && (m.isImportant ? optedIn.contains(m.id) : !excluded.contains(m.id));
+
+  void toggle(MailMeta m, bool on) {
+    if (m.isImportant) {
+      on ? optedIn.add(m.id) : optedIn.remove(m.id);
+    } else {
+      on ? excluded.remove(m.id) : excluded.add(m.id);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -213,8 +226,10 @@ class _MailListPageState extends State<MailListPage> {
       senders: widget.senders,
       olderThanDays: olderThan,
       unreadOnly: unreadOnly,
+      includeImportant: true,
+      includeStarred: true,
     );
-    final chosen = msgs.where((m) => !excluded.contains(m.id)).toList();
+    final chosen = msgs.where(isChosen).toList();
     final protected = widget.categories?.any((c) => c.isProtected) ?? false;
     final busy = s.progress != null;
     final unsub = msgs.map((m) => m.listUnsubscribe).firstWhere((u) => u.isNotEmpty, orElse: () => '');
@@ -243,7 +258,8 @@ class _MailListPageState extends State<MailListPage> {
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
           child: Text(
             '${formatCount(chosen.length)} נבחרו מתוך ${formatCount(msgs.length)} · '
-            '${formatBytes(chosen.fold(0, (a, m) => a + m.size))} · מיילים מסומנים בכוכב או "חשוב" לא מוצגים',
+            '${formatBytes(chosen.fold(0, (a, m) => a + m.size))}\n'
+            '★ מסומנים בכוכב: מוגנים ולא ניתנים לבחירה · ❗ "חשוב" לפי Gmail: לא מסומנים מראש',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ),
@@ -260,9 +276,9 @@ class _MailListPageState extends State<MailListPage> {
               final m = msgs[i];
               return CheckboxListTile(
                 dense: true,
-                value: !excluded.contains(m.id),
-                onChanged: (v) => setState(() => v! ? excluded.remove(m.id) : excluded.add(m.id)),
-                title: Text(m.subject.isEmpty ? '(ללא נושא)' : m.subject,
+                value: isChosen(m),
+                onChanged: m.isStarred ? null : (v) => setState(() => toggle(m, v!)),
+                title: Text('${m.isStarred ? '★ ' : m.isImportant ? '❗ ' : ''}${m.subject.isEmpty ? '(ללא נושא)' : m.subject}',
                     maxLines: 1, overflow: TextOverflow.ellipsis,
                     style: m.isUnread ? const TextStyle(fontWeight: FontWeight.bold) : null),
                 subtitle: Text('${m.senderName.isNotEmpty ? m.senderName : m.sender} · ${formatDate(m.date)}',
