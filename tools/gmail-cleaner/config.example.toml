@@ -1,0 +1,25 @@
+# העתק קובץ זה ל-config.toml וערוך. כל השדות אופציונליים.
+
+[me]
+# כתובות שלך (כדי לא לסווג את עצמך כ"חבר")
+addresses = ["me@gmail.com"]
+
+[family]
+# כתובות של בני משפחה
+addresses = ["mom@gmail.com", "dad@walla.co.il"]
+# שם משפחה / שמות שמופיעים בשם השולח (לא רגיש לאותיות גדולות)
+names = ["כהן", "cohen"]
+
+[friends]
+addresses = ["best.friend@gmail.com"]
+# סווג אוטומטית כ"חברים" אנשים פרטיים (gmail/walla וכו') שאתה שלחת אליהם מייל בעבר
+from_sent_mail = true
+
+# הרחבת חוקים קיימים: keywords נבדקות בנושא, domains בכתובת השולח.
+# קטגוריות שניתן להרחיב: receipts, finance, travel, social, promotions
+[rules.finance]
+domains = ["mybroker.com"]
+keywords = ["דוח רבעוני"]
+
+[rules.promotions]
+domains = ["shop.example.co.il"]

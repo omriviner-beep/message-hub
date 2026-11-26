@@ -1,0 +1,7 @@
+credentials.json
+token.json
+config.toml
+*.db
+*.csv
+__pycache__/
+.venv/

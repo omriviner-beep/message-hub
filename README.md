@@ -99,4 +99,8 @@ android/app/src/main/kotlin/.../
 test/                       בדיקות יחידה ובדיקת UI
 ```
 
+## כלי מחשב: gmail-cleaner
+
+בתיקייה `tools/gmail-cleaner` יש כלי שורת פקודה ב-Python, עם אותו סיווג מיילים, לניקוי Gmail מהמחשב. ההוראות ב-README שלו.
+
 כדי לשנות את חוקי סיווג המיילים, ערוך את `lib/gmail/classifier.dart` (`defaultRules`).
